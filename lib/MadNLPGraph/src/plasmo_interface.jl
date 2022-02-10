@@ -198,7 +198,12 @@ jac_structure!(nlp::GraphModel,I,J) =jacobian_structure(
     nlp.graph,I,J,nlp.ninds,nlp.minds,nlp.pinds,nlp.nnzs_jac_inds,nlp.nnzs_link_jac_inds,
     nlp.x_index_map,nlp.g_index_map,nlp.modelnodes,nlp.linkedges)
 
+
+"""
+    GraphModel(graph::OptiGraph; use_subgraphs=False)
+"""
 function GraphModel(graph::OptiGraph)
+
     modelnodes = all_nodes(graph)
     linkedges = all_edges(graph)
 
@@ -308,28 +313,47 @@ function GraphModel(graph::OptiGraph)
 
 end
 
-function get_part(graph::OptiGraph,nlp::GraphModel)
-    n = nlp.ext[:n]
-    m = nlp.ext[:m]
-    p = nlp.ext[:p]
+function get_part(graph::OptiGraph,nlp::GraphModel,partition_type::Symbol)
+    if partition_type == :nodes
+        return get_part_nodes(graph,nlp)
+    elseif partition_type == :subgraphs
+        return get_part_subgraphs(graph,nlp)
+    else
+        error("Invalid option passed as partition type. Must specific :nodes or :subgraphs")
+    end
+end
 
-    ninds = nlp.ninds
-    minds = nlp.minds
-    pinds = nlp.pinds
+#get partition of the GraphModel using nodes.
+#This ultimately produces a partition vector of variables and constraints
+function get_part_nodes(graph::OptiGraph,nlp::GraphModel)
+    n = nlp.ext[:n] #num variables
+    m = nlp.ext[:m] #num constraints
+    p = nlp.ext[:p] #num link constraints
 
+    ninds = nlp.ninds #variable partitions [1:n_vars]
+    minds = nlp.minds #constraint partitions [1:n_cons]
+    pinds = nlp.pinds #linking constraints [n_cons+1 : n_cons + n_links]
+
+    #inequality constraint indices
     ind_ineq = findall(get_lcon(nlp).!=get_ucon(nlp))
     l = length(ind_ineq)
 
+    #part vector elements are: n_variables + n_constraints + n_link_constraints
     part = Vector{Int}(undef,n+m+l+p)
 
+    #assign variables to partitions
     for k=1:length(ninds)
         part[ninds[k]].=k
     end
+
+    #assign constraints to partitions
     for k=1:length(minds)
         part[minds[k].+n.+l].=k
     end
-    cnt = 0
 
+    #assign link constraints to partitions based on attached node
+    #linkedges should be highest level edges
+    cnt = 0
     for linkedge in nlp.ext[:linkedges]
         for (ind,con) in linkedge.linkconstraints
             cnt+=1
@@ -338,46 +362,128 @@ function get_part(graph::OptiGraph,nlp::GraphModel)
         end
     end
 
+    #assign inequality constraints
     cnt = 0
     for q in ind_ineq
         cnt+=1
         part[n+cnt] = part[n+l+q]
     end
 
+    return part
+end
+
+function get_part_subgraphs(graph::OptiGraph,nlp::GraphModel)
+
+    n = nlp.ext[:n] #variables
+    m = nlp.ext[:m] #constraints
+    p = nlp.ext[:p] #link constraints
+
+    #TODO: re-assign based on subgraphs
+    ninds = nlp.ninds
+    minds = nlp.minds
+    pinds = nlp.pinds
+
+    #define partition based on subgraph structure
+
+    #inequality constraint indices
+    ind_ineq = findall(get_lcon(nlp).!=get_ucon(nlp))
+    l = length(ind_ineq)
+
+    #part vector elements are: n_variables + n_constraints + n_link_constraints
+    part = Vector{Int}(undef,n+m+l+p)
+    #assign variables to partitions
+    for k=1:length(ninds)
+        part[ninds[k]].=k
+    end
+
+    #assign constraints to partitions
+    for k=1:length(minds)
+        part[minds[k].+n.+l].=k
+    end
+    cnt = 0
+
+    #assign link constraints to partitions
+    #linkedges should be highest level edges
+    for linkedge in nlp.ext[:linkedges]
+        for (ind,con) in linkedge.linkconstraints
+            cnt+=1
+            attached_node_idx = graph.node_idx_map[con.attached_node]
+            part[n+l+m+cnt] = attached_node_idx != nothing ? attached_node_idx : error("All the link constraints need to be attached to a node")
+        end
+    end
+
+    #assign inequality constraints
+    cnt = 0
+    for q in ind_ineq
+        cnt+=1
+        part[n+cnt] = part[n+l+q]
+    end
 
     return part
 end
 
-function optimize!(graph::OptiGraph; option_dict = Dict{Symbol,Any}(), kwargs...)
-    graph.objective_function.constant = 0.
+function _get_option(option::Symbol,option_dict::Dict{Symbol,Any},kwargs...)
+    if haskey(kwargs,option)
+        return kwargs[option]
+    elseif haskey(option_dict,option)
+        return option_dict[option]
+    else
+        return nothing
+    end
+end
+
+function _set_schur_options!(graph::OptiGraph,nlp::GraphModel,option_dict::Dict,partition::Symbol)
+    part = get_part(graph,nlp,partition)
+    K = length(unique(part))
+    # part[part.>K].=0 #NOTE: this line might not be needed
+    option_dict[:schur_part] = part
+    option_dict[:schur_num_parts] = K
+    return nothing
+end
+
+function _set_schwarz_options!(graph::OptiGraph,nlp::GraphModel,option_dict::Dict,partition::Symbol)
+    part= get_part(graph,nlp,partition)
+    K = length(unique(part))
+    option_dict[:schwarz_part] = part
+    option_dict[:schwarz_num_parts] = K
+end
+
+#prototype optimize using subgraphs
+#:linear_solver=>MadNLPSchur,:linear_solver=>MadNLPSchwarz
+function optimize!(graph::OptiGraph; partition=:auto, option_dict=Dict{Symbol,Any}(), kwargs...)
+    @assert partition in (:auto,:nodes,:subgraphs)
+    #parse partition arguments
+    if partition == :auto
+        partition = has_subgraphs(graph) ? :subgraphs : :nodes
+    end
+    # K := number of partitions
+    # if partition == :subgraphs
+    #     K = num_subgraphs(graph)
+    # else
+    #     K = num_all_nodes(graph)
+    # end
+
     nlp = GraphModel(graph)
 
-    K = num_all_nodes(graph)
-    if (haskey(kwargs,:schwarz_custom_partition) && kwargs[:schwarz_custom_partition]) ||
-        (haskey(option_dict,:schwarz_custom_partition) && option_dict[:schwarz_custom_partition])
-
-        part= get_part(graph,nlp)
-        option_dict[:schwarz_part] = part
-        option_dict[:schwarz_num_parts] = num_all_nodes(graph)
-
-    elseif (haskey(kwargs,:schur_custom_partition) && kwargs[:schur_custom_partition]) ||
-        (haskey(option_dict,:schur_custom_partition) && option_dict[:schur_custom_partition])
-
-        part= get_part(graph,nlp)
-        part[part.>K].=0
-        option_dict[:schur_part] = part
-        option_dict[:schur_num_parts] = K
+    if _get_option(:linear_solver,option_dict,kwargs) == MadNLPSchur
+        _set_schur_options!(graph,nlp,option_dict,partition)
+    end
+    if _get_option(:linear_solver,option_dict,kwargs) == MadNLPSchwarz
+        _set_schwarz_options!(graph,nlp,option_dict,partition)
     end
 
     option_dict[:jacobian_constant] = nlp.ext[:jac_constant]
     option_dict[:hessian_constant] = nlp.ext[:hess_constant]
-    ips = InteriorPointSolver(nlp;option_dict=option_dict,kwargs...)
+
+    #schur and schwarz options get passed through to linear solver initialization
+    ips = InteriorPointSolver(nlp; option_dict=option_dict, kwargs...)
     result = optimize!(ips)
 
+    #set optigraph optimizer to InteriorPointSolver
     graph.optimizer = ips
-    graph.objective_function.constant = graph.optimizer.obj_val
 
-    @blas_safe_threads for k=1:K
+    #update solution
+    @blas_safe_threads for k=1:num_all_nodes(graph) #K
         moi_optimizer(nlp.modelnodes[k]).result = MadNLPExecutionStats(
             ips.status,view(result.solution,nlp.ninds[k]),
             ips.obj_val,
@@ -389,3 +495,56 @@ function optimize!(graph::OptiGraph; option_dict = Dict{Symbol,Any}(), kwargs...
             ips.cnt.k, ips.nlp.counters,ips.cnt.total_time)
     end
 end
+
+# original optimize!
+# #TODO: use subgraphs for partitions
+# #WHY?:
+# more direct interface, don't have to aggregate which can be too much memory and time-consuming
+# easier to convey structure to MadNLP
+# function optimize!(graph::OptiGraph; option_dict = Dict{Symbol,Any}(), kwargs...)
+#     graph.objective_function.constant = 0.
+#     nlp = GraphModel(graph)
+#     K = num_all_nodes(graph)
+#     # setup schwarz options if option given
+#     if (haskey(kwargs,:schwarz_custom_partition) && kwargs[:schwarz_custom_partition]) ||
+#         (haskey(option_dict,:schwarz_custom_partition) && option_dict[:schwarz_custom_partition])
+#         part= get_part(graph,nlp)
+#         option_dict[:schwarz_part] = part
+#         option_dict[:schwarz_num_parts] = num_all_nodes(graph)
+#
+#     elseif (haskey(kwargs,:schur_custom_partition) && kwargs[:schur_custom_partition]) ||
+#         (haskey(option_dict,:schur_custom_partition) && option_dict[:schur_custom_partition])
+#
+#         part= get_part(graph,nlp)
+#         part[part.>K].=0
+#         option_dict[:schur_part] = part
+#         option_dict[:schur_num_parts] = K
+#     end
+#
+#     option_dict[:jacobian_constant] = nlp.ext[:jac_constant]
+#     option_dict[:hessian_constant] = nlp.ext[:hess_constant]
+#
+#     #pass linear solver here
+#     ips = InteriorPointSolver(nlp;option_dict=option_dict,kwargs...)
+#     result = optimize!(ips)
+#
+#     #set optigraph optimizer to InteriorPointSolver
+#     graph.optimizer = ips
+#
+#     #graph.objective_function.constant = graph.optimizer.obj_val
+#
+#     @blas_safe_threads for k=1:K
+#         moi_optimizer(nlp.modelnodes[k]).result = MadNLPExecutionStats(
+#             ips.status,view(result.solution,nlp.ninds[k]),
+#             ips.obj_val,
+#             view(result.constraints,nlp.minds[k]),
+#             ips.inf_du, ips.inf_pr,
+#             view(result.multipliers,nlp.minds[k]),
+#             view(result.multipliers_L,nlp.ninds[k]),
+#             view(result.multipliers_U,nlp.ninds[k]),
+#             ips.cnt.k, ips.nlp.counters,ips.cnt.total_time)
+#     end
+# end
+
+#Retrieve objective value from MadNLP.InteriorPointSolver
+MathOptInterface.get(ips::InteriorPointSolver,::MathOptInterface.ObjectiveValue) = ips.obj_val

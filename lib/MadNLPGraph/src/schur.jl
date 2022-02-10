@@ -50,7 +50,6 @@ mutable struct Solver <: AbstractLinearSolver
     logger::Logger
 end
 
-
 function Solver(csc::SparseMatrixCSC{Float64};
                 option_dict::Dict{Symbol,Any}=Dict{Symbol,Any}(),
                 opt=Options(schur_subproblem_solver=default_linear_solver(),
@@ -92,7 +91,7 @@ function SolverWorker(tsp,V_0,csc::SparseMatrixCSC{Float64},inds::Vector{Int},k,
                       SubproblemSolverModule::Module,logger::Logger,option_dict::Dict{Symbol,Any})
 
     V    = findall(tsp.part.==k)
-    
+
     csc_k,csc_k_view = get_cscsy_view(csc,V,inds=inds)
     compl,compl_view = get_csc_view(csc,V,V_0,inds=inds)
     V_0_nz = findnz(compl.colptr)
