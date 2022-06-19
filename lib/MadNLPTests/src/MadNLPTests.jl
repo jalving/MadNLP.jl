@@ -211,28 +211,31 @@ struct DenseDummyQP <: NLPModels.AbstractNLPModel{Float64,Vector{Float64}}
     counters::NLPModels.Counters
 end
 
-function NLPModels.jac_structure!(qp::DenseDummyQP,I, J)
+function NLPModels.jac_structure!(qp::DenseDummyQP, I::AbstractVector{T}, J::AbstractVector{T}) where T
     copyto!(I, qp.jrows)
     copyto!(J, qp.jcols)
 end
-function NLPModels.hess_structure!(qp::DenseDummyQP,I, J)
+function NLPModels.hess_structure!(qp::DenseDummyQP, I::AbstractVector{T}, J::AbstractVector{T}) where T
     copyto!(I, qp.hrows)
     copyto!(J, qp.hcols)
 end
 
-function NLPModels.obj(qp::DenseDummyQP,x)
+function NLPModels.obj(qp::DenseDummyQP, x::AbstractVector)
     return 0.5 * dot(x, qp.P, x) + dot(qp.q, x)
 end
-function NLPModels.grad!(qp::DenseDummyQP,x,g)
+function NLPModels.grad!(qp::DenseDummyQP, x::AbstractVector, g::AbstractVector)
     mul!(g, qp.P, x)
     g .+= qp.q
     return
 end
-function NLPModels.cons!(qp::DenseDummyQP,x,c)
+function NLPModels.cons!(qp::DenseDummyQP, x::AbstractVector, c::AbstractVector)
     mul!(c, qp.A, x)
 end
 # Jacobian: sparse callback
-function NLPModels.jac_coord!(qp::DenseDummyQP, x, J::AbstractVector)
+function NLPModels.jac_coord!(qp::DenseDummyQP, x::AbstractVector, J::AbstractVector)
+
+    NLPModels.@lencheck NLPModels.get_nnzj(qp) J
+    
     index = 1
     for (i, j) in zip(qp.jrows, qp.jcols)
         J[index] = qp.A[i, j]
@@ -243,6 +246,8 @@ end
 MadNLP.jac_dense!(qp::DenseDummyQP, x, J::AbstractMatrix) = copyto!(J, qp.A)
 # Hessian: sparse callback
 function NLPModels.hess_coord!(qp::DenseDummyQP,x, l, hess::AbstractVector; obj_weight=1.0)
+    NLPModels.@lencheck NLPModels.get_nnzh(qp) hess
+    
     index = 1
     for i in 1:NLPModels.get_nvar(qp) , j in 1:i
         hess[index] = obj_weight * qp.P[j, i]
@@ -254,7 +259,7 @@ function MadNLP.hess_dense!(qp::DenseDummyQP, x, l,hess::AbstractMatrix; obj_wei
     copyto!(hess, obj_weight .* qp.P)
 end
 
-function DenseDummyQP(; n=100, m=10, fixed_variables=Int[])
+function DenseDummyQP(; n=100, m=10, fixed_variables=Int[], equality_cons=[])
     if m >= n
         error("The number of constraints `m` should be less than the number of variable `n`.")
     end
@@ -279,10 +284,12 @@ function DenseDummyQP(; n=100, m=10, fixed_variables=Int[])
     y0 = zeros(m)
 
     # Bound constraints
-    xu =   ones(n)
-    xl = - ones(n)
-    gl = -ones(m)
-    gu = ones(m)
+    xu = fill(1.0, n)
+    xl = fill(0.0, n)
+    gl = fill(0.0, m)
+    gu = fill(1.0, m)
+    # Update gu to load equality constraints
+    gu[equality_cons] .= 0.0
 
     xl[fixed_variables] .= xu[fixed_variables]
 
