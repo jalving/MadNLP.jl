@@ -46,7 +46,7 @@ end
 
 function jacobian_structure(linkedge::OptiEdge,I,J,ninds,x_index_map,g_index_map)
     offset=1
-    for linkcon in link_constraints(linkedge)
+    for linkcon in Plasmo.linkconstraints(linkedge)
         offset += jacobian_structure(linkcon,I,J,ninds,x_index_map,g_index_map,offset)
     end
 end
@@ -107,7 +107,7 @@ function eval_function(aff::GenericAffExpr,x,ninds,x_index_map)
 end
 function eval_constraint(linkedge::OptiEdge,c,x,ninds,x_index_map)
     cnt = 1
-    for linkcon in link_constraints(linkedge)
+    for linkcon in Plasmo.linkconstraints(linkedge)
         c[cnt] = eval_function(get_func(linkcon),x,ninds,x_index_map)
         cnt += 1
     end
@@ -134,7 +134,7 @@ end
 
 function eval_constraint_jacobian(linkedge::OptiEdge,jac,x)
     offset=0
-    for linkcon in link_constraints(linkedge)
+    for linkcon in Plasmo.linkconstraints(linkedge)
         offset+=eval_constraint_jacobian(linkcon,jac,offset)
     end
 end
@@ -184,7 +184,7 @@ struct GraphModel{T} <: AbstractNLPModel{T,Vector{T}}
 end
 
 obj(nlp::GraphModel, x::AbstractVector) =  eval_objective(nlp.graph,x,nlp.ninds,nlp.x_index_map,nlp.modelnodes)
-grad!(nlp::GraphModel, x::AbstractVector, f::AbstractVector) =eval_objective_gradient(nlp.graph,f,x,nlp.ninds,nlp.modelnodes)
+grad!(nlp::GraphModel, x::AbstractVector, f::AbstractVector) = eval_objective_gradient(nlp.graph,f,x,nlp.ninds,nlp.modelnodes)
 cons!(nlp::GraphModel, x::AbstractVector, c::AbstractVector) = eval_constraint(
     nlp.graph,c,x,nlp.ninds,nlp.minds,nlp.pinds,nlp.x_index_map,nlp.modelnodes,nlp.linkedges)
 function hess_coord!(nlp::GraphModel,x::AbstractVector,l::AbstractVector,hess::AbstractVector;obj_weight=1.)
@@ -385,6 +385,7 @@ function get_part_nodes(graph::OptiGraph,nlp::GraphModel)
     return part
 end
 
+#define partition based on subgraph structure
 function get_part_subgraphs(graph::OptiGraph,nlp::GraphModel)
 
     n = nlp.ext[:n] #variables
@@ -395,8 +396,6 @@ function get_part_subgraphs(graph::OptiGraph,nlp::GraphModel)
     ninds = nlp.ninds
     minds = nlp.minds
     pinds = nlp.pinds
-
-    #define partition based on subgraph structure
 
     #inequality constraint indices
     ind_ineq = findall(get_lcon(nlp).!=get_ucon(nlp))
@@ -435,39 +434,40 @@ function get_part_subgraphs(graph::OptiGraph,nlp::GraphModel)
     return part
 end
 
-function _get_option(option::Symbol,option_dict::Dict{Symbol,Any},kwargs...)
-    if haskey(kwargs,option)
+function _get_option(option::Symbol, option_dict::Dict{Symbol,Any}, kwargs...)
+    kwargs = Dict(kwargs)
+    if haskey(kwargs, option)
         return kwargs[option]
-    elseif haskey(option_dict,option)
+    elseif haskey(option_dict, option)
         return option_dict[option]
     else
         return nothing
     end
 end
 
-function _set_schur_options!(graph::OptiGraph,nlp::GraphModel,option_dict::Dict,partition::Symbol)
+function _set_schur_options!(graph::OptiGraph, nlp::GraphModel, option_dict::Dict, partition::Symbol)
     part = get_part(graph,nlp,partition)
     K = length(unique(part))
-    # part[part.>K].=0 #NOTE: this line might not be needed
+    # part[part.>K].=0 #NOTE: this line should not be needed
     option_dict[:schur_part] = part
     option_dict[:schur_num_parts] = K
     return nothing
 end
 
-function _set_schwarz_options!(graph::OptiGraph,nlp::GraphModel,option_dict::Dict,partition::Symbol)
+function _set_schwarz_options!(graph::OptiGraph, nlp::GraphModel, option_dict::Dict, partition::Symbol)
     part= get_part(graph,nlp,partition)
     K = length(unique(part))
     option_dict[:schwarz_part] = part
     option_dict[:schwarz_num_parts] = K
 end
 
-#prototype optimize using subgraphs
-#:linear_solver=>MadNLPSchur,:linear_solver=>MadNLPSchwarz
+# prototype optimize using subgraphs
+# :linear_solver=>MadNLPSchur,:linear_solver=>MadNLPSchwarz
 function optimize!(graph::OptiGraph; partition=:auto, option_dict=Dict{Symbol,Any}(), kwargs...)
-    @assert partition in (:auto,:nodes,:subgraphs)
+    @assert partition in (:auto, :nodes, :subgraphs)
     #parse partition arguments
     if partition == :auto
-        partition = has_subgraphs(graph) ? :subgraphs : :nodes
+        partition = Plasmo.has_subgraphs(graph) ? :subgraphs : :nodes
     end
     # K := number of partitions
     # if partition == :subgraphs
@@ -478,10 +478,10 @@ function optimize!(graph::OptiGraph; partition=:auto, option_dict=Dict{Symbol,An
 
     nlp = GraphModel(graph)
 
-    if _get_option(:linear_solver,option_dict,kwargs) == MadNLPSchur
-        _set_schur_options!(graph,nlp,option_dict,partition)
+    if _get_option(:linear_solver, option_dict, kwargs) == MadNLPSchur
+        _set_schur_options!(graph, nlp,option_dict, partition)
     end
-    if _get_option(:linear_solver,option_dict,kwargs) == MadNLPSchwarz
+    if _get_option(:linear_solver, option_dict,kwargs) == MadNLPSchwarz
         _set_schwarz_options!(graph,nlp,option_dict,partition)
     end
 
@@ -493,7 +493,9 @@ function optimize!(graph::OptiGraph; partition=:auto, option_dict=Dict{Symbol,An
     result = optimize!(ips)
 
     #set optigraph optimizer to InteriorPointSolver
-    graph.optimizer = ips
+    # NOTE: MadNLP puts the optimizer on the node backends
+    graph.ext[:ips] = ips
+    #graph.optimizer = ips
 
     #update solution
     @blas_safe_threads for k=1:num_all_nodes(graph) #K
@@ -507,7 +509,7 @@ function optimize!(graph::OptiGraph; partition=:auto, option_dict=Dict{Symbol,An
             view(result.multipliers_U,nlp.ninds[k]),
             ips.cnt.k, ips.nlp.counters,ips.cnt.total_time)
             # TODO: quick hack to specify to JuMP that the
-            # model is not dirty (so we do not run in `OptimizeNotCalled`
+            # model is not dirty (so we do not run into `OptimizeNotCalled`
             # exception).
             nlp.modelnodes[k].model.is_model_dirty = false
     end
@@ -564,4 +566,4 @@ end
 # end
 
 #Retrieve objective value from MadNLP.InteriorPointSolver
-MathOptInterface.get(ips::InteriorPointSolver,::MathOptInterface.ObjectiveValue) = ips.obj_val
+MathOptInterface.get(ips::InteriorPointSolver, ::MathOptInterface.ObjectiveValue) = ips.obj_val

@@ -6,7 +6,7 @@ import MadNLP:
     jacobian_structure, hessian_lagrangian_structure, eval_objective,
     eval_objective_gradient, eval_function, eval_constraint, eval_hessian_lagrangian, eval_constraint_jacobian,
     @kwdef, Logger, @debug, @warn, @error, @sprintf,
-    AbstractOptions, AbstractLinearSolver, EmptyLinearSolver, set_options!,
+    AbstractOptions, AbstractLinearSolver, set_options!,
     SparseMatrixCSC, SubVector, StrideOneVector,
     SymbolicException,FactorizationException,SolveException,InertiaException,
     introduce, factorize!, solve!, improve!, is_inertia, inertia,
@@ -17,6 +17,7 @@ import MadNLP:
 import Metis: partition
 import LightGraphs: Graph, Edge, add_edge!, edges, src, dst, neighbors, nv
 import Plasmo: OptiGraph, OptiNode, OptiEdge, all_nodes, all_edges, all_variables, num_all_nodes, getlinkconstraints, getnode, num_variables, num_constraints
+import Plasmo
 import MathOptInterface
 
 import JuMP: _create_nlp_block_data, set_optimizer, GenericAffExpr

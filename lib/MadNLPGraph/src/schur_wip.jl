@@ -1,8 +1,9 @@
 module MadNLPSchur
 
+# NOTE: EmptyLinearSolver is deprecated
 import ..MadNLPGraph:
     @kwdef, Logger, @debug, @warn, @error,
-    AbstractOptions, AbstractLinearSolver, EmptyLinearSolver, set_options!, SparseMatrixCSC, SubVector, StrideOneVector,
+    AbstractOptions, AbstractLinearSolver, set_options!, SparseMatrixCSC, SubVector, StrideOneVector,
     SymbolicException,FactorizationException,SolveException,InertiaException,
     introduce, factorize!, solve!, improve!, is_inertia, inertia,
     default_linear_solver, default_dense_solver, get_csc_view, get_cscsy_view, nnz, mul!,
@@ -184,7 +185,10 @@ end
 
 function introduce(M::Solver)
     for sw in M.sws
-        sw.M isa EmptyLinearSolver || return "schur equipped with "*introduce(sw.M)
+        #println(typeof(sw.M))
+        return "schur equipped with "*introduce(sw.M)
+        # NOTE: introduce returns the first solver worker
+        #sw.M isa EmptyLinearSolver || return "schur equipped with "*introduce(sw.M)
     end
 end
 
